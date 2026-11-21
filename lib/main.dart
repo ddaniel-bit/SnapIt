@@ -5,6 +5,7 @@ import 'gaze/gaze_controller.dart';
 import 'gaze/gaze_cursor.dart';
 import 'home_page.dart';
 import 'pose/pose_camera.dart';
+import 'standup_reminder.dart';
 import 'ui/app_theme.dart';
 
 void main() {
@@ -31,8 +32,24 @@ class _SnapItAppState extends State<SnapItApp> {
   // Nézéses navigáció ugyanazzal a kamerával.
   late final GazeController _gaze = GazeController(_camera);
 
+  final GlobalKey<NavigatorState> _navigator = GlobalKey();
+
+  /// „Állj fel!" értesítés, ha sokáig nem vagy az appban – koppintásra az
+  /// app a főoldalon nyílik meg (ott választod ki, hány játékos van).
+  late final StandUpReminder _reminder = StandUpReminder(
+    onOpenHome: () =>
+        _navigator.currentState?.popUntil((route) => route.isFirst),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _reminder; // létrehozás: figyeli, mikor lépsz ki az appból
+  }
+
   @override
   void dispose() {
+    _reminder.dispose();
     _gaze.dispose();
     _camera.dispose();
     super.dispose();
@@ -45,6 +62,7 @@ class _SnapItAppState extends State<SnapItApp> {
       child: GazeScope(
         controller: _gaze,
         child: MaterialApp(
+          navigatorKey: _navigator,
           builder: (context, child) => Stack(
             children: [
               child!,

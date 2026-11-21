@@ -25,6 +25,10 @@ enum _Phase { intro, posing, judged, gameOver }
 /// annyi pont jár, ahány százalékos lett a póz; ha a minimum alatt maradsz,
 /// kiestél. A végén a legjobb pillanatod fotóját a pontszámmal meg lehet
 /// osztani: „Beat me if you can!".
+///
+/// Többen egymás ellen játszanak: mindenkinek saját pontszáma van, aki a
+/// minimum alatt marad, az kiesik, a többiek folytatják – amíg mindenki ki
+/// nem esett. A végén kiírja a nyertest (a legtöbb pont) és a ranglistát.
 class PlayPage extends StatefulWidget {
   const PlayPage({super.key, required this.players});
 
@@ -351,8 +355,30 @@ class _PlayPageState extends State<PlayPage>
               GlassIconButton(symbol: 'xmark', onTap: _done),
               const SizedBox(width: 10),
               _chip('Round $_round'),
-              const Spacer(),
-              _chip('$_score pts', color: AppColors.good),
+              const SizedBox(width: 8),
+              // Pontszámok: egyedül egy, versenyben játékosonként.
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    alignment: WrapAlignment.end,
+                    children: [
+                      if (!_versus)
+                        _chip('${_points.first} pts', color: AppColors.good)
+                      else
+                        for (var i = 0; i < _n; i++)
+                          _chip(
+                            _out[i]
+                                ? 'P${i + 1} ✗ ${_points[i]}'
+                                : 'P${i + 1} ${_points[i]}',
+                            color: _out[i] ? Colors.white38 : AppColors.good,
+                          ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 6),
@@ -392,25 +418,28 @@ class _PlayPageState extends State<PlayPage>
       smallSide,
     );
 
-    final acc = _accuracy;
+    final acc = _soloAccuracy;
     final ok = acc != null && acc >= _need;
-    final figureSize = widget.players == 1
+    final figureSize = !_versus
         ? 96.0
-        : ((box.maxWidth * (landscape ? 0.5 : 1) - 16) / widget.players).clamp(
-            44.0,
-            84.0,
-          );
+        : ((box.maxWidth * (landscape ? 0.5 : 1) - 16) / _n).clamp(44.0, 84.0);
     final figures = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        for (var i = 0; i < widget.players; i++)
+        for (var i = 0; i < _n; i++)
           SizedBox(
             width: figureSize,
-            child: PlayerFigure(
-              pose: _pose,
-              label: widget.players == 1 ? null : 'P${i + 1}',
-              accuracy: widget.players == 1 ? null : _acc[i],
-              score: _scores[i],
+            // A kiesett játékos halványan, „OUT" jellel.
+            child: Opacity(
+              opacity: _out[i] ? 0.35 : 1,
+              child: PlayerFigure(
+                pose: _pose,
+                label: !_versus
+                    ? null
+                    : (_out[i] ? 'P${i + 1} OUT' : 'P${i + 1}'),
+                accuracy: !_versus || _out[i] ? null : _acc[i],
+                score: _out[i] ? null : _scores[i],
+              ),
             ),
           ),
       ],
@@ -420,10 +449,12 @@ class _PlayPageState extends State<PlayPage>
       children: [
         _chip(
           'Need ${_need.round()}%',
-          color: ok ? AppColors.good : AppColors.accentLight,
+          color: !_versus && ok ? AppColors.good : AppColors.accentLight,
         ),
-        const SizedBox(height: 8),
-        AccuracyPill(accuracy: acc, missing: widget.players - _visible),
+        if (!_versus) ...[
+          const SizedBox(height: 8),
+          AccuracyPill(accuracy: acc, missing: acc == null ? 1 : 0),
+        ],
       ],
     );
 
@@ -524,38 +555,26 @@ class _PlayPageState extends State<PlayPage>
           child: ReferencePhoto(pose: _pose, radius: 26 - 12 * t),
         ),
         // A kör eredménye.
-        if (_phase == _Phase.judged && _lastResult != null)
-          Center(child: _judgeBanner(_lastResult!)),
+        if (_phase == _Phase.judged) Center(child: _judgeBanner()),
       ],
     );
   }
 
-  Widget _judgeBanner(double result) {
-    final passed = result >= _need;
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.6, end: 1),
-      duration: const Duration(milliseconds: 350),
-      curve: Curves.easeOutBack,
-      builder: (context, s, child) => Transform.scale(scale: s, child: child),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.65),
-          borderRadius: BorderRadius.circular(26),
-          border: Border.all(
-            color: (passed ? AppColors.good : AppColors.bad).withValues(
-              alpha: 0.8,
-            ),
-            width: 2,
-          ),
-        ),
-        child: Column(
+  /// A kör eredménye: egyedül egy nagy szám, versenyben játékosonként.
+  Widget _judgeBanner() {
+    Widget line(int i) {
+      final r = _lastResults[i];
+      if (r == null) return const SizedBox.shrink();
+      final passed = r >= _need;
+      final color = passed ? AppColors.good : AppColors.bad;
+      if (!_versus) {
+        return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              passed ? '+${result.round()}' : '${result.round()}%',
+              passed ? '+${r.round()}' : '${r.round()}%',
               style: TextStyle(
-                color: passed ? AppColors.good : AppColors.bad,
+                color: color,
                 fontSize: 64,
                 fontWeight: FontWeight.w900,
                 height: 1,
@@ -571,13 +590,63 @@ class _PlayPageState extends State<PlayPage>
               ),
             ),
           ],
+        );
+      }
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Text(
+          passed
+              ? 'P${i + 1}  +${r.round()}'
+              : 'P${i + 1}  ✗ ${r.round()}%  OUT',
+          style: TextStyle(
+            color: color,
+            fontSize: 26,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+      );
+    }
+
+    final anyFailed = _lastResults.any((r) => r != null && r < _need);
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.6, end: 1),
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOutBack,
+      builder: (context, s, child) => Transform.scale(scale: s, child: child),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.65),
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(
+            color: (anyFailed ? AppColors.bad : AppColors.good).withValues(
+              alpha: 0.8,
+            ),
+            width: 2,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var i = 0; i < _n; i++) line(i),
+            if (_versus) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Needed ${_need.round()}%',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.8),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
   }
 
   Widget _buildGameOver() {
-    final result = _lastResult ?? 0;
     final image = _shareImage;
     final card = Center(
       child: AspectRatio(
@@ -596,45 +665,111 @@ class _PlayPageState extends State<PlayPage>
         ),
       ),
     );
-    final info = Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Text(
-          'Game over!',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 30,
-            fontWeight: FontWeight.w900,
+
+    final Widget info;
+    if (!_versus) {
+      final result = _lastResults.first ?? 0;
+      info = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'Game over!',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 30,
+              fontWeight: FontWeight.w900,
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          '${result.round()}% – you needed ${_need.round()}%',
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.75),
-            fontSize: 15,
+          const SizedBox(height: 4),
+          Text(
+            '${result.round()}% – you needed ${_need.round()}%',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.75),
+              fontSize: 15,
+            ),
           ),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          '$_score pts',
-          style: const TextStyle(
-            color: AppColors.good,
-            fontSize: 48,
-            fontWeight: FontWeight.w900,
-            height: 1,
+          const SizedBox(height: 10),
+          Text(
+            '${_points.first} pts',
+            style: const TextStyle(
+              color: AppColors.good,
+              fontSize: 48,
+              fontWeight: FontWeight.w900,
+              height: 1,
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          '${_round - 1} round${_round - 1 == 1 ? '' : 's'} · best $_best pts',
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.75),
-            fontSize: 14,
+          const SizedBox(height: 4),
+          Text(
+            '${_round - 1} round${_round - 1 == 1 ? '' : 's'} · best $_best pts',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.75),
+              fontSize: 14,
+            ),
           ),
-        ),
-      ],
-    );
+        ],
+      );
+    } else {
+      // Versenyben: a nyertes és a ranglista.
+      final ranking = List<int>.generate(_n, (i) => i)
+        ..sort((a, b) {
+          final byPoints = _points[b].compareTo(_points[a]);
+          return byPoints != 0
+              ? byPoints
+              : _outRound[b].compareTo(_outRound[a]);
+        });
+      final winners = _winners;
+      info = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            winners.length == 1
+                ? '🏆 P${winners.first + 1} wins!'
+                : '🏆 ${winners.map((i) => 'P${i + 1}').join(' & ')} tie!',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 30,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '$_topScore pts',
+            style: const TextStyle(
+              color: AppColors.good,
+              fontSize: 40,
+              fontWeight: FontWeight.w900,
+              height: 1.1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          for (var place = 0; place < ranking.length; place++)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 1),
+              child: Text(
+                '${place + 1}.  P${ranking[place] + 1}   '
+                '${_points[ranking[place]]} pts   '
+                '(round ${_outRound[ranking[place]]})',
+                style: TextStyle(
+                  color: winners.contains(ranking[place])
+                      ? AppColors.good
+                      : Colors.white.withValues(alpha: 0.8),
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          const SizedBox(height: 2),
+          Text(
+            'best $_best pts',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.6),
+              fontSize: 13,
+            ),
+          ),
+        ],
+      );
+    }
     final share = GazeTarget(
       radius: 29,
       enabled: image != null,

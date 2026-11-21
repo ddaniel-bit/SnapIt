@@ -2,6 +2,7 @@ import Flutter
 import Photos
 import SwiftUI
 import UIKit
+import UserNotifications
 import Vision
 
 @main
@@ -13,7 +14,33 @@ import Vision
     // Amíg az app fut, ne aludjon el a kijelző (pózolás / nézéses
     // navigáció közben senki sem érinti a képernyőt).
     application.isIdleTimerDisabled = true
+    // Értesítések: engedélykérés, és hogy az app előtérben is mutassa őket.
+    UNUserNotificationCenter.current().delegate = self
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) {
+      _, _ in
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  // Az értesítés az app előtérben is jelenjen meg.
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+    withCompletionHandler completionHandler:
+      @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.banner, .sound])
+  }
+
+  // Koppintás az értesítésre → az app a főoldalon nyílik meg (ott lehet
+  // kiválasztani, hány játékos van).
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    if response.notification.request.identifier == StandUpReminder.id {
+      StandUpReminder.shared.openHome()
+    }
+    completionHandler()
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
@@ -26,6 +53,9 @@ import Vision
     }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "SharePlugin") {
       ShareSheet.register(with: registrar)
+    }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "StandUpPlugin") {
+      StandUpReminder.shared.register(with: registrar)
     }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "GlassTextPlugin") {
       registrar.register(GlassTextFactory(), withId: "projekt/glass_text")
@@ -581,5 +611,56 @@ enum ShareSheet {
       ?? scene?.windows.first?.rootViewController
     while let presented = top?.presentedViewController { top = presented }
     return top
+  }
+}
+
+// MARK: - „Állj fel!" emlékeztető
+
+/// Helyi értesítés: „Stand up! … strike a pose". A Dart oldal ütemezi
+/// (`schedule`: seconds, title, body) és törli (`cancel`); koppintásra az
+/// app a főoldalon nyílik meg (`openHome` → Dart). Ha az app az értesítésre
+/// koppintva indul el, eleve a főoldalon indul.
+final class StandUpReminder {
+  static let shared = StandUpReminder()
+  static let id = "snapit.standup"
+
+  private var channel: FlutterMethodChannel?
+
+  func register(with registrar: FlutterPluginRegistrar) {
+    let channel = FlutterMethodChannel(
+      name: "projekt/standup", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self else { return result(nil) }
+      switch call.method {
+      case "schedule":
+        let args = call.arguments as? [String: Any] ?? [:]
+        self.schedule(
+          after: (args["seconds"] as? NSNumber)?.doubleValue ?? 30,
+          title: args["title"] as? String ?? "",
+          body: args["body"] as? String ?? "")
+        result(nil)
+      case "cancel":
+        UNUserNotificationCenter.current().removePendingNotificationRequests(
+          withIdentifiers: [Self.id])
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+    self.channel = channel
+  }
+
+  private func schedule(after seconds: Double, title: String, body: String) {
+    let content = UNMutableNotificationContent()
+    content.title = title
+    content.body = body
+    content.sound = .default
+    let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(seconds, 1), repeats: false)
+    let request = UNNotificationRequest(identifier: Self.id, content: content, trigger: trigger)
+    UNUserNotificationCenter.current().add(request)
+  }
+
+  func openHome() {
+    channel?.invokeMethod("openHome", arguments: nil)
   }
 }
